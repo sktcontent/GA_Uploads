@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Course Content Gap Analysis</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --card: #ffffff; --border: #e5e3dd; --border-strong:#d4d1c8;
+    --text: #1a1a18; --text-secondary: #6b685f; --text-muted: #99968c;
+    --accent: #185fa5; --accent-bg:#e6f1fb;
+    --match: #639922; --match-bg:#eaf3de; --match-text:#27500a;
+    --diff: #ba7517; --diff-bg:#faeeda; --diff-text:#633806;
+    --missing: #a32d2d; --missing-bg:#fcebeb; --missing-text:#791f1f;
+    --extra: #185fa5; --extra-bg:#e6f1fb; --extra-text:#0c447c;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; background: var(--bg); color: var(--text); margin:0; padding: 24px; }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+  .subtitle { color: var(--text-secondary); font-size: 14px; margin: 0 0 20px; }
+
+  /* Upload screen */
+  .upload-screen { display:flex; flex-direction:column; gap:18px; }
+  .upload-grid { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 700px) { .upload-grid { grid-template-columns: 1fr; } }
+  .drop {
+    background: var(--card); border: 2px dashed var(--border-strong); border-radius: 14px;
+    padding: 28px 18px; text-align:center; cursor:pointer; transition: border-color .15s, background .15s;
+  }
+  .drop:hover, .drop.dragover { border-color: var(--accent); background: var(--accent-bg); }
+  .drop input { display:none; }
+  .drop .icon { font-size: 30px; margin-bottom: 8px; color: var(--text-muted); }
+  .drop .label { font-weight:600; font-size:14px; margin-bottom: 4px; }
+  .drop .hint { font-size:12px; color: var(--text-muted); }
+  .drop .filename { margin-top: 10px; font-size: 13px; color: var(--accent); font-weight:600; word-break:break-all; }
+  .platform-tag { font-size: 11px; text-transform:uppercase; letter-spacing:.04em; color: var(--text-muted); font-weight:700; margin-bottom:10px; }
+
+  button.primary {
+    background: var(--text); color: #fff; border: none; border-radius: var(--radius);
+    padding: 12px 20px; font-size: 14px; font-weight:600; cursor:pointer; align-self:flex-start;
+  }
+  button.primary:disabled { background: var(--border-strong); color: var(--text-muted); cursor:not-allowed; }
+  button.secondary {
+    background: var(--card); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--radius);
+    padding: 9px 16px; font-size: 13px; font-weight:600; cursor:pointer;
+  }
+
+  .status-box { font-size: 13px; color: var(--text-secondary); padding: 10px 14px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); display:none; }
+  .status-box.show { display:block; }
+  .status-box.error { color: var(--missing-text); background: var(--missing-bg); border-color: var(--missing-text); }
+
+  /* Results screen */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap: 12px; margin-bottom: 20px; }
+  .stat { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+  .stat .num { font-size: 26px; font-weight: 700; }
+  .stat .label { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+  .stat.match .num { color: var(--match); }
+  .stat.diff .num { color: var(--diff); }
+  .stat.missing .num { color: var(--missing); }
+  .stat.extra .num { color: var(--extra); }
+
+  .controls { display:flex; flex-wrap:wrap; gap: 10px; margin-bottom: 18px; align-items:center; }
+  input[type=text] {
+    flex: 1; min-width: 220px; padding: 9px 12px; border-radius: var(--radius);
+    border: 1px solid var(--border-strong); font-size: 14px; background: var(--card); color: var(--text);
+  }
+  .chip {
+    padding: 7px 13px; border-radius: 999px; border: 1px solid var(--border-strong);
+    font-size: 13px; cursor: pointer; background: var(--card); color: var(--text-secondary); user-select:none;
+  }
+  .chip.active { color: #fff; border-color: transparent; }
+  .chip[data-f="all"].active { background:#3c3c3a; }
+  .chip[data-f="Match"].active { background: var(--match); }
+  .chip[data-f="Present (asset diff)"].active { background: var(--diff); }
+  .chip[data-f="Missing in SUIP"].active { background: var(--missing); }
+  .chip[data-f="Extra in SUIP"].active { background: var(--extra); }
+
+  .module { background: var(--card); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 14px; overflow: hidden; }
+  .module-header {
+    display:flex; justify-content:space-between; align-items:center; padding: 12px 16px;
+    cursor: pointer; background: #fbfaf7; border-bottom: 1px solid var(--border);
+  }
+  .module-header:hover { background: #f3f2ee; }
+  .module-title { font-weight: 600; font-size: 14.5px; }
+  .module-counts { display:flex; gap:6px; font-size: 11px; }
+  .badge { padding: 2px 8px; border-radius: 999px; font-weight: 600; }
+  .badge.match { background: var(--match-bg); color: var(--match-text); }
+  .badge.diff { background: var(--diff-bg); color: var(--diff-text); }
+  .badge.missing { background: var(--missing-bg); color: var(--missing-text); }
+  .badge.extra { background: var(--extra-bg); color: var(--extra-text); }
+  .chevron { transition: transform 0.15s ease; color: var(--text-muted); }
+  .module.collapsed .chevron { transform: rotate(-90deg); }
+  .module.collapsed .rows { display:none; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th {
+    text-align:left; font-size: 11px; text-transform: uppercase; letter-spacing:.03em;
+    color: var(--text-muted); padding: 8px 16px; border-bottom: 1px solid var(--border); font-weight:600;
+  }
+  tbody td { padding: 9px 16px; border-bottom: 1px solid #f0efe9; vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: #fbfaf7; }
+  .status-pill { display:inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+  .status-pill.match { background: var(--match-bg); color: var(--match-text); }
+  .status-pill.diff { background: var(--diff-bg); color: var(--diff-text); }
+  .status-pill.missing { background: var(--missing-bg); color: var(--missing-text); }
+  .status-pill.extra { background: var(--extra-bg); color: var(--extra-text); }
+  .asset { color: var(--text-secondary); font-size: 12px; }
+  .empty-cell { color: var(--text-muted); font-style: italic; }
+  .no-results { text-align:center; padding: 40px; color: var(--text-muted); }
+  .top-bar { display:flex; justify-content:space-between; align-items:center; margin-bottom: 16px; }
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div id="uploadScreen" class="upload-screen">
+    <div>
+      <h1>Course content gap analysis</h1>
+      <p class="subtitle">Upload the OLX export (<code>course.tar.gz</code>) for each course to compare module-by-module, asset-by-asset.</p>
+    </div>
+
+    <div class="upload-grid">
+      <div>
+        <div class="platform-tag">Course A (e.g. edX)</div>
+        <label class="drop" id="dropA">
+          <input type="file" id="fileA" accept=".gz,.tar,.tgz">
+          <div class="icon">&#8593;</div>
+          <div class="label">Click or drop course export here</div>
+          <div class="hint">.tar.gz / .tgz OLX export from Studio</div>
+          <div class="filename" id="fileNameA"></div>
+        </label>
+      </div>
+      <div>
+        <div class="platform-tag">Course B (e.g. SkillUp / myclass)</div>
+        <label class="drop" id="dropB">
+          <input type="file" id="fileB" accept=".gz,.tar,.tgz">
+          <div class="icon">&#8593;</div>
+          <div class="label">Click or drop course export here</div>
+          <div class="hint">.tar.gz / .tgz OLX export from Studio</div>
+          <div class="filename" id="fileNameB"></div>
+        </label>
+      </div>
+    </div>
+
+    <div class="status-box" id="statusBox"></div>
+
+    <button class="primary" id="analyzeBtn" disabled>Run gap analysis</button>
+  </div>
+
+  <div id="resultsScreen" class="hidden">
+    <div class="top-bar">
+      <div>
+        <h1 id="resultsTitle">Course content gap analysis</h1>
+        <p class="subtitle" id="resultsSubtitle"></p>
+      </div>
+      <button class="secondary" id="backBtn">&larr; Compare different files</button>
+    </div>
+
+    <div class="stats" id="stats"></div>
+
+    <div class="controls">
+      <input type="text" id="search" placeholder="Search topics...">
+      <div class="chip active" data-f="all">All</div>
+      <div class="chip" data-f="Match">Match</div>
+      <div class="chip" data-f="Present (asset diff)">Asset diff</div>
+      <div class="chip" data-f="Missing in SUIP">Missing in B</div>
+      <div class="chip" data-f="Extra in SUIP">Extra in B</div>
+    </div>
+
+    <div id="modules"></div>
+    <div class="no-results" id="noResults" style="display:none;">No matching topics found.</div>
+  </div>
+
+</div>
+
+<script>
+/* ===================== TAR + GZIP PARSING (no external deps) ===================== */
+
+async function gunzip(arrayBuffer) {
+  // Use native browser DecompressionStream (Chrome/Edge/Firefox modern versions)
+  const ds = new DecompressionStream('gzip');
+  const stream = new Blob([arrayBuffer]).stream().pipeThrough(ds);
+  const buf = await new Response(stream).arrayBuffer();
+  return new Uint8Array(buf);
+}
+
+function readTarString(view, offset, length) {
+  let bytes = view.subarray(offset, offset + length);
+  let end = bytes.indexOf(0);
+  if (end === -1) end = bytes.length;
+  return new TextDecoder('utf-8').decode(bytes.subarray(0, end)).trim();
+}
+
+function parseOctal(view, offset, length) {
+  const s = readTarString(view, offset, length).trim();
+  if (!s) return 0;
+  return parseInt(s, 8) || 0;
+}
+
+// Parses a USTAR/GNU tar byte stream into a Map<path, Uint8Array>
+function parseTar(bytes) {
+  const files = new Map();
+  let offset = 0;
+  let pendingLongName = null;
+
+  while (offset + 512 <= bytes.length) {
+    const header = bytes.subarray(offset, offset + 512);
+    // Check for end-of-archive (two zero blocks)
+    let allZero = true;
+    for (let i = 0; i < 512; i++) { if (header[i] !== 0) { allZero = false; break; } }
+    if (allZero) break;
+
+    let name = readTarString(header, 0, 100);
+    const size = parseOctal(header, 124, 12);
+    const typeflag = String.fromCharCode(header[156] || 0);
+    const prefix = readTarString(header, 345, 155);
+    if (prefix) name = prefix + '/' + name;
+
+    offset += 512;
+    const dataStart = offset;
+    const dataEnd = dataStart + size;
+
+    if (typeflag === 'L') {
+      // GNU long name: content of this entry is the real name of the NEXT entry
+      pendingLongName = new TextDecoder('utf-8').decode(bytes.subarray(dataStart, dataStart + size)).replace(/\0+$/, '');
+    } else if (typeflag === '0' || typeflag === '' || typeflag === '\0') {
+      const finalName = pendingLongName || name;
+      pendingLongName = null;
+      if (finalName && !finalName.endsWith('/')) {
+        files.set(finalName, bytes.subarray(dataStart, dataEnd));
+      }
+    } else {
+      pendingLongName = null; // directories (5), etc. - skip
+    }
+
+    // advance to next 512-byte boundary
+    offset = dataStart + Math.ceil(size / 512) * 512;
+  }
+  return files;
+}
+
+function textOf(files, path) {
+  const bytes = files.get(path);
+  if (!bytes) return null;
+  return new TextDecoder('utf-8').decode(bytes);
+}
+
+/* ===================== OLX COURSE TREE PARSING ===================== */
+
+function parseXml(str) {
+  return new DOMParser().parseFromString(str, 'text/xml');
+}
+
+function getXmlNode(files, tag, urlName) {
+  const path = `course/${tag}/${urlName}.xml`;
+  const txt = textOf(files, path);
+  if (!txt) return null;
+  const doc = parseXml(txt);
+  return doc.documentElement;
+}
+
+function displayName(el) {
+  return el.getAttribute('display_name') || el.getAttribute('url_name') || '';
+}
+
+// Returns array of chapters: { name, sequentials: [ { name, verticals: [ { name, components: [ [type,name] ] } ] } ] }
+function buildCourseTree(files) {
+  const courseXmlTxt = textOf(files, 'course/course.xml');
+  if (!courseXmlTxt) throw new Error('course/course.xml not found in archive — is this a valid OLX export?');
+  const courseRoot = parseXml(courseXmlTxt).documentElement;
+  const urlName = courseRoot.getAttribute('url_name');
+  const courseDetail = getXmlNode(files, 'course', urlName);
+  if (!courseDetail) throw new Error(`course/course/${urlName}.xml not found`);
+
+  const chapters = [];
+  for (const chapterRef of Array.from(courseDetail.children).filter(e => e.tagName === 'chapter')) {
+    const chUrl = chapterRef.getAttribute('url_name');
+    const chNode = getXmlNode(files, 'chapter', chUrl);
+    if (!chNode) continue;
+    const chapter = { name: displayName(chNode), sequentials: [] };
+
+    for (const seqRef of Array.from(chNode.children).filter(e => e.tagName === 'sequential')) {
+      const seqUrl = seqRef.getAttribute('url_name');
+      const seqNode = getXmlNode(files, 'sequential', seqUrl);
+      if (!seqNode) continue;
+      const seq = { name: displayName(seqNode), verticals: [] };
+
+      for (const vertRef of Array.from(seqNode.children).filter(e => e.tagName === 'vertical')) {
+        const vertUrl = vertRef.getAttribute('url_name');
+        const vertNode = getXmlNode(files, 'vertical', vertUrl);
+        if (!vertNode) continue;
+        const vert = { name: displayName(vertNode), components: [] };
+        for (const comp of Array.from(vertNode.children)) {
+          const ctype = comp.tagName;
+          const cname = comp.getAttribute('display_name') || comp.getAttribute('url_name') || '';
+          vert.components.push([ctype, cname]);
+        }
+        seq.verticals.push(vert);
+      }
+      chapter.sequentials.push(seq);
+    }
+    chapters.push(chapter);
+  }
+  return chapters;
+}
+
+/* ===================== GAP COMPARISON (mirrors the Python logic) ===================== */
+
+function norm(s) {
+  s = (s || '').toLowerCase().trim();
+  s = s.replace(/[\s\-_:,.]+/g, ' ');
+  s = s.replace(/[^a-z0-9 ]/g, '');
+  return s.trim();
+}
+
+function typeStr(comps) {
+  const counts = {};
+  comps.forEach(([t]) => counts[t] = (counts[t]||0)+1);
+  return Object.entries(counts).map(([t,c]) => c>1 ? `${t}x${c}` : t).join(', ');
+}
+
+function seqList(chapter) {
+  return chapter.sequentials.map(seq => {
+    let comps = [];
+    seq.verticals.forEach(v => comps = comps.concat(v.components));
+    return { seq: seq.name, norm: norm(seq.name), comps };
+  });
+}
+
+function compareCourses(courseA, courseB) {
+  const rows = [];
+  const nChapters = Math.max(courseA.length, courseB.length);
+
+  for (let i = 0; i < nChapters; i++) {
+    const chA = courseA[i] || null;
+    const chB = courseB[i] || null;
+    const displayNameCh = chA ? chA.name : chB.name;
+
+    const aSeqs = chA ? seqList(chA) : [];
+    const bSeqs = chB ? seqList(chB) : [];
+    const bByNorm = {};
+    bSeqs.forEach(s => { (bByNorm[s.norm] = bByNorm[s.norm] || []).push(s); });
+    const used = new Set();
+
+    aSeqs.forEach(a => {
+      let match = null;
+      const candidates = bByNorm[a.norm] || [];
+      for (const c of candidates) { if (!used.has(c)) { match = c; break; } }
+      if (match) {
+        used.add(match);
+        const aCounts = {}, bCounts = {};
+        a.comps.forEach(([t]) => aCounts[t]=(aCounts[t]||0)+1);
+        match.comps.forEach(([t]) => bCounts[t]=(bCounts[t]||0)+1);
+        const sameTypes = JSON.stringify(Object.entries(aCounts).sort()) === JSON.stringify(Object.entries(bCounts).sort());
+        const status = sameTypes ? 'Match' : 'Present (asset diff)';
+        rows.push([displayNameCh, a.seq, typeStr(a.comps), match.seq, typeStr(match.comps), status]);
+      } else {
+        rows.push([displayNameCh, a.seq, typeStr(a.comps), '', '', 'Missing in SUIP']);
+      }
+    });
+
+    bSeqs.forEach(b => {
+      if (!used.has(b)) {
+        rows.push([displayNameCh, '', '', b.seq, typeStr(b.comps), 'Extra in SUIP']);
+      }
+    });
+  }
+  return rows;
+}
+
+function courseStats(course) {
+  let seqs = 0, assets = 0;
+  course.forEach(ch => {
+    seqs += ch.sequentials.length;
+    ch.sequentials.forEach(seq => seq.verticals.forEach(v => assets += v.components.length));
+  });
+  return { chapters: course.length, seqs, assets };
+}
+
+/* ===================== FILE UPLOAD UI ===================== */
+
+let fileA = null, fileB = null;
+
+function setupDrop(dropId, inputId, fileNameId, onFile) {
+  const drop = document.getElementById(dropId);
+  const input = document.getElementById(inputId);
+  const nameEl = document.getElementById(fileNameId);
+
+  input.addEventListener('change', () => {
+    if (input.files[0]) { onFile(input.files[0]); nameEl.textContent = input.files[0].name; }
+  });
+  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('dragover'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('dragover'));
+  drop.addEventListener('drop', (e) => {
+    e.preventDefault();
+    drop.classList.remove('dragover');
+    if (e.dataTransfer.files[0]) {
+      onFile(e.dataTransfer.files[0]);
+      nameEl.textContent = e.dataTransfer.files[0].name;
+    }
+  });
+}
+
+setupDrop('dropA', 'fileA', 'fileNameA', (f) => { fileA = f; updateAnalyzeBtn(); });
+setupDrop('dropB', 'fileB', 'fileNameB', (f) => { fileB = f; updateAnalyzeBtn(); });
+
+function updateAnalyzeBtn() {
+  document.getElementById('analyzeBtn').disabled = !(fileA && fileB);
+}
+
+function showStatus(msg, isError) {
+  const box = document.getElementById('statusBox');
+  box.textContent = msg;
+  box.className = 'status-box show' + (isError ? ' error' : '');
+}
+function hideStatus() {
+  document.getElementById('statusBox').className = 'status-box';
+}
+
+async function fileToCourseTree(file) {
+  const buf = await file.arrayBuffer();
+  let bytes = new Uint8Array(buf);
+  // Detect gzip magic bytes 1F 8B; if present, decompress. Otherwise assume raw tar.
+  if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+    bytes = await gunzip(buf);
+  }
+  const files = parseTar(bytes);
+  if (files.size === 0) throw new Error(`Could not read any files from ${file.name}. Make sure it's a valid tar/tar.gz OLX export.`);
+  return buildCourseTree(files);
+}
+
+document.getElementById('analyzeBtn').addEventListener('click', async () => {
+  hideStatus();
+  const btn = document.getElementById('analyzeBtn');
+  btn.disabled = true;
+  btn.textContent = 'Analyzing...';
+  try {
+    showStatus('Reading course A...', false);
+    const courseA = await fileToCourseTree(fileA);
+    showStatus('Reading course B...', false);
+    const courseB = await fileToCourseTree(fileB);
+    showStatus('Comparing content...', false);
+    const rows = compareCourses(courseA, courseB);
+    renderResults(rows, fileA.name, fileB.name, courseStats(courseA), courseStats(courseB));
+    hideStatus();
+  } catch (err) {
+    console.error(err);
+    showStatus('Error: ' + err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Run gap analysis';
+  }
+});
+
+document.getElementById('backBtn').addEventListener('click', () => {
+  document.getElementById('resultsScreen').classList.add('hidden');
+  document.getElementById('uploadScreen').classList.remove('hidden');
+});
+
+/* ===================== RESULTS DASHBOARD ===================== */
+
+const statusClass = { 'Match':'match', 'Present (asset diff)':'diff', 'Missing in SUIP':'missing', 'Extra in SUIP':'extra' };
+const statusShort = { 'Match':'Match', 'Present (asset diff)':'Asset diff', 'Missing in SUIP':'Missing in B', 'Extra in SUIP':'Extra in B' };
+
+let currentData = [];
+let activeFilter = 'all';
+let searchTerm = '';
+
+function renderResults(rows, nameA, nameB, statsA, statsB) {
+  currentData = rows;
+  activeFilter = 'all';
+  searchTerm = '';
+  document.getElementById('search').value = '';
+  document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+  document.querySelector('.chip[data-f="all"]').classList.add('active');
+
+  document.getElementById('resultsSubtitle').textContent =
+    `Course A: ${nameA} (${statsA.chapters} modules, ${statsA.seqs} topics, ${statsA.assets} assets)  |  ` +
+    `Course B: ${nameB} (${statsB.chapters} modules, ${statsB.seqs} topics, ${statsB.assets} assets)`;
+
+  document.getElementById('uploadScreen').classList.add('hidden');
+  document.getElementById('resultsScreen').classList.remove('hidden');
+
+  renderStats();
+  renderModules();
+}
+
+function renderStats() {
+  const counts = { 'Match':0, 'Present (asset diff)':0, 'Missing in SUIP':0, 'Extra in SUIP':0 };
+  currentData.forEach(r => counts[r[5]]++);
+  const total = currentData.length;
+  document.getElementById('stats').innerHTML = `
+    <div class="stat"><div class="num">${total}</div><div class="label">Total topics compared</div></div>
+    <div class="stat match"><div class="num">${counts['Match']}</div><div class="label">Fully matching</div></div>
+    <div class="stat diff"><div class="num">${counts['Present (asset diff)']}</div><div class="label">Asset differences</div></div>
+    <div class="stat missing"><div class="num">${counts['Missing in SUIP']}</div><div class="label">Missing in B</div></div>
+    <div class="stat extra"><div class="num">${counts['Extra in SUIP']}</div><div class="label">Extra in B</div></div>
+  `;
+}
+
+function matchesSearch(eSeq, sSeq, term) {
+  if (!term) return true;
+  return (eSeq + ' ' + sSeq).toLowerCase().includes(term);
+}
+
+function renderModules() {
+  // group rows by module (chapter), preserving order
+  const modules = [];
+  const moduleMap = {};
+  currentData.forEach(r => {
+    const [mod, eSeq, eAsset, sSeq, sAsset, status] = r;
+    if (!moduleMap[mod]) { moduleMap[mod] = { name: mod, rows: [] }; modules.push(moduleMap[mod]); }
+    moduleMap[mod].rows.push({ eSeq, eAsset, sSeq, sAsset, status });
+  });
+
+  const container = document.getElementById('modules');
+  container.innerHTML = '';
+  let anyVisible = false;
+
+  modules.forEach((mod) => {
+    const filteredRows = mod.rows.filter(r => {
+      const passFilter = activeFilter === 'all' || r.status === activeFilter;
+      const passSearch = matchesSearch(r.eSeq, r.sSeq, searchTerm);
+      return passFilter && passSearch;
+    });
+    if (filteredRows.length === 0) return;
+    anyVisible = true;
+
+    const counts = { 'Match':0, 'Present (asset diff)':0, 'Missing in SUIP':0, 'Extra in SUIP':0 };
+    mod.rows.forEach(r => counts[r.status]++);
+
+    const badgesHtml = `
+      ${counts['Missing in SUIP'] ? `<span class="badge missing">${counts['Missing in SUIP']} missing</span>` : ''}
+      ${counts['Present (asset diff)'] ? `<span class="badge diff">${counts['Present (asset diff)']} diff</span>` : ''}
+      ${counts['Extra in SUIP'] ? `<span class="badge extra">${counts['Extra in SUIP']} extra</span>` : ''}
+      ${counts['Match'] ? `<span class="badge match">${counts['Match']} match</span>` : ''}
+    `;
+
+    const rowsHtml = filteredRows.map(r => `
+      <tr>
+        <td>${r.eSeq ? escapeHtml(r.eSeq) : '<span class="empty-cell">&mdash;</span>'}${r.eAsset ? `<div class="asset">${escapeHtml(r.eAsset)}</div>` : ''}</td>
+        <td>${r.sSeq ? escapeHtml(r.sSeq) : '<span class="empty-cell">&mdash;</span>'}${r.sAsset ? `<div class="asset">${escapeHtml(r.sAsset)}</div>` : ''}</td>
+        <td><span class="status-pill ${statusClass[r.status]}">${statusShort[r.status]}</span></td>
+      </tr>
+    `).join('');
+
+    const modDiv = document.createElement('div');
+    modDiv.className = 'module';
+    modDiv.innerHTML = `
+      <div class="module-header">
+        <div class="module-title">${escapeHtml(mod.name)}</div>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <div class="module-counts">${badgesHtml}</div>
+          <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </div>
+      </div>
+      <div class="rows">
+        <table>
+          <thead><tr><th style="width:38%">Course A topic</th><th style="width:38%">Course B topic</th><th style="width:24%">Status</th></tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+    `;
+    modDiv.querySelector('.module-header').addEventListener('click', () => modDiv.classList.toggle('collapsed'));
+    container.appendChild(modDiv);
+  });
+
+  document.getElementById('noResults').style.display = anyVisible ? 'none' : 'block';
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+document.querySelectorAll('.chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    activeFilter = chip.dataset.f;
+    renderModules();
+  });
+});
+
+document.getElementById('search').addEventListener('input', (e) => {
+  searchTerm = e.target.value.toLowerCase();
+  renderModules();
+});
+</script>
+</body>
+</html>

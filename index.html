@@ -386,6 +386,7 @@ function courseStats(course) {
 /* ===================== FILE UPLOAD UI ===================== */
 
 let fileA = null, fileB = null;
+let lastCourseA = null, lastCourseB = null, lastNameA = '', lastNameB = '';
 
 function setupDrop(dropId, inputId, fileNameId, onFile) {
   const drop = document.getElementById(dropId);
@@ -447,6 +448,8 @@ document.getElementById('analyzeBtn').addEventListener('click', async () => {
     const courseB = await fileToCourseTree(fileB);
     showStatus('Comparing content...', false);
     const rows = compareCourses(courseA, courseB);
+    lastCourseA = courseA; lastCourseB = courseB;
+    lastNameA = fileA.name; lastNameB = fileB.name;
     renderResults(rows, fileA.name, fileB.name, courseStats(courseA), courseStats(courseB));
     hideStatus();
   } catch (err) {
@@ -594,44 +597,237 @@ document.getElementById('search').addEventListener('input', (e) => {
   renderModules();
 });
 
-/* ===================== EXCEL EXPORT ===================== */
+/* ===================== EXCEL EXPORT (ExcelJS - full styling) ===================== */
 
-document.getElementById('downloadBtn').addEventListener('click', () => {
-  const wb = XLSX.utils.book_new();
-
-  // ---- Summary sheet ----
-  const counts = { 'Match':0, 'Present (asset diff)':0, 'Missing in SUIP':0, 'Extra in SUIP':0 };
-  currentData.forEach(r => counts[r[5]]++);
-  const summaryAOA = [
-    ['Content Gap Analysis'],
-    [],
-    ['Status', 'Count'],
-    ['Match', counts['Match']],
-    ['Present (asset diff)', counts['Present (asset diff)']],
-    ['Missing in Course B', counts['Missing in SUIP']],
-    ['Extra in Course B', counts['Extra in SUIP']],
-    ['Total topics compared', currentData.length],
-  ];
-  const summaryWs = XLSX.utils.aoa_to_sheet(summaryAOA);
-  summaryWs['!cols'] = [{wch:28},{wch:14}];
-  XLSX.utils.book_append_sheet(wb, summaryWs, 'Summary');
-
-  // ---- Gap Analysis sheet (module-wise, matches the dashboard grouping) ----
-  const header = ['Module / Chapter', 'Course A - Topic', 'Course A - Assets', 'Course B - Topic', 'Course B - Assets', 'Status'];
-  const gapAOA = [header];
-  let lastModule = null;
-  currentData.forEach(row => {
-    const [mod, eSeq, eAsset, sSeq, sAsset, status] = row;
-    gapAOA.push([mod !== lastModule ? mod : '', eSeq, eAsset, sSeq, sAsset, statusShort[status] || status]);
-    lastModule = mod;
+function flattenDetailRows(course) {
+  const rows = [];
+  course.forEach(ch => {
+    ch.sequentials.forEach(seq => {
+      let any = false;
+      seq.verticals.forEach(v => {
+        v.components.forEach(([ctype, cname]) => {
+          rows.push([ch.name, seq.name, v.name, ctype, cname]);
+          any = true;
+        });
+      });
+      if (!any) rows.push([ch.name, seq.name, '', '', '']);
+    });
   });
-  const gapWs = XLSX.utils.aoa_to_sheet(gapAOA);
-  gapWs['!cols'] = [{wch:32},{wch:40},{wch:14},{wch:40},{wch:14},{wch:16}];
-  XLSX.utils.book_append_sheet(wb, gapWs, 'Gap Analysis');
+  return rows;
+}
 
-  XLSX.writeFile(wb, 'Course_Gap_Analysis.xlsx');
+function typeCounts(course) {
+  const counts = {};
+  course.forEach(ch => ch.sequentials.forEach(seq => seq.verticals.forEach(v =>
+    v.components.forEach(([t]) => counts[t] = (counts[t]||0)+1))));
+  return counts;
+}
+
+function courseTotals(course) {
+  let seqs = 0, assets = 0;
+  course.forEach(ch => {
+    seqs += ch.sequentials.length;
+    ch.sequentials.forEach(seq => seq.verticals.forEach(v => assets += v.components.length));
+  });
+  return { chapters: course.length, seqs, assets };
+}
+
+const ARGB = {
+  headerFill: 'FF1F4E78', headerFont: 'FFFFFFFF',
+  titleFont: 'FF1F4E78',
+  matchFill: 'FFC6EFCE', matchFont: 'FF006100',
+  diffFill: 'FFFFEB9C', diffFont: 'FF9C6500',
+  missingFill: 'FFFFC7CE', missingFont: 'FF9C0006',
+  extraFill: 'FFDDEBF7', extraFont: 'FF1F4E78',
+  chapterFill: 'FFD9E1F2', chapterFont: 'FF1F4E78',
+  border: 'FFD9D9D9',
+};
+
+function thinBorderAll() {
+  const side = { style: 'thin', color: { argb: ARGB.border } };
+  return { top: side, bottom: side, left: side, right: side };
+}
+
+function styleHeaderRow(row) {
+  row.eachCell(cell => {
+    cell.font = { name: 'Arial', size: 11, bold: true, color: { argb: ARGB.headerFont } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ARGB.headerFill } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+  });
+}
+
+document.getElementById('downloadBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('downloadBtn');
+  btn.disabled = true;
+  btn.textContent = 'Building workbook...';
+  try {
+    const wb = new ExcelJS.Workbook();
+
+    /* ---------------- SUMMARY ---------------- */
+    const ws1 = wb.addWorksheet('Summary', { views: [{ showGridLines: false }] });
+    ws1.getColumn(1).width = 3;
+    ws1.getColumn(2).width = 45;
+    ws1.getColumn(3).width = 14;
+    ws1.getColumn(4).width = 14;
+    ws1.getColumn(5).width = 14;
+    ws1.getColumn(6).width = 60;
+
+    ws1.getCell('B2').value = 'Content Gap Analysis';
+    ws1.getCell('B2').font = { name: 'Arial', size: 14, bold: true, color: { argb: ARGB.titleFont } };
+    ws1.getCell('B3').value = `${lastNameA} vs ${lastNameB}`;
+    ws1.getCell('B3').font = { name: 'Arial', size: 10, italic: true, color: { argb: 'FF555555' } };
+
+    const totA = courseTotals(lastCourseA), totB = courseTotals(lastCourseB);
+    const hdr1 = ['Course', 'Role', 'Chapters', 'Sequences (Topics)', 'Total Assets'];
+    hdr1.forEach((h, i) => { const c = ws1.getCell(5, 2 + i); c.value = h;
+      c.font = { name: 'Arial', bold: true, color: { argb: ARGB.headerFont } };
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ARGB.headerFill } };
+      c.alignment = { horizontal: 'center' }; });
+    const infoRows = [
+      [lastNameA, 'Course A', totA.chapters, totA.seqs, totA.assets],
+      [lastNameB, 'Course B', totB.chapters, totB.seqs, totB.assets],
+    ];
+    infoRows.forEach((r, ri) => r.forEach((v, ci) => {
+      const c = ws1.getCell(6 + ri, 2 + ci);
+      c.value = v;
+      c.font = { name: 'Arial', size: 10 };
+      c.border = thinBorderAll();
+      c.alignment = { horizontal: ci === 0 ? 'left' : 'center' };
+    }));
+
+    let r = 10;
+    ws1.getCell(`B${r}`).value = 'Asset Type Breakdown';
+    ws1.getCell(`B${r}`).font = { name: 'Arial', size: 12, bold: true, color: { argb: ARGB.titleFont } };
+    r += 1;
+    const cA = typeCounts(lastCourseA), cB = typeCounts(lastCourseB);
+    const types = Array.from(new Set([...Object.keys(cA), ...Object.keys(cB)])).sort();
+    const hdr2 = ['Asset Type', 'Course A Count', 'Course B Count', 'Difference'];
+    hdr2.forEach((h, i) => { const c = ws1.getCell(r, 2 + i); c.value = h;
+      c.font = { name: 'Arial', bold: true, color: { argb: ARGB.headerFont } };
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ARGB.headerFill } };
+      c.alignment = { horizontal: 'center' }; });
+    r += 1;
+    types.forEach(t => {
+      const av = cA[t] || 0, bv = cB[t] || 0;
+      [t, av, bv, bv - av].forEach((v, ci) => {
+        const c = ws1.getCell(r, 2 + ci);
+        c.value = v;
+        c.font = { name: 'Arial', size: 10 };
+        c.border = thinBorderAll();
+        c.alignment = { horizontal: ci === 0 ? 'left' : 'center' };
+      });
+      r += 1;
+    });
+
+    r += 1;
+    ws1.getCell(`B${r}`).value = 'Missing in Course B';
+    ws1.getCell(`B${r}`).font = { name: 'Arial', size: 12, bold: true, color: { argb: ARGB.missingFont } };
+    r += 1;
+    currentData.filter(x => x[5] === 'Missing in SUIP').forEach(x => {
+      ws1.getCell(`B${r}`).value = '\u2022 ' + x[1];
+      ws1.getCell(`B${r}`).font = { name: 'Arial', size: 10, color: { argb: ARGB.missingFont } };
+      r += 1;
+    });
+
+    r += 1;
+    ws1.getCell(`B${r}`).value = 'Extra in Course B';
+    ws1.getCell(`B${r}`).font = { name: 'Arial', size: 12, bold: true, color: { argb: ARGB.extraFont } };
+    r += 1;
+    currentData.filter(x => x[5] === 'Extra in SUIP').forEach(x => {
+      ws1.getCell(`B${r}`).value = '\u2022 ' + x[3];
+      ws1.getCell(`B${r}`).font = { name: 'Arial', size: 10, color: { argb: ARGB.extraFont } };
+      r += 1;
+    });
+
+    /* ---------------- GAP ANALYSIS ---------------- */
+    const ws2 = wb.addWorksheet('Gap Analysis', { views: [{ state: 'frozen', ySplit: 1 }] });
+    ws2.columns = [
+      { width: 30 }, { width: 42 }, { width: 16 }, { width: 42 }, { width: 16 }, { width: 20 },
+    ];
+    const headerRow2 = ws2.addRow(['Module / Chapter', 'Course A - Topic', 'Course A - Assets', 'Course B - Topic', 'Course B - Assets', 'Status']);
+    styleHeaderRow(headerRow2);
+    ws2.getRow(1).height = 30;
+
+    const statusFillFont = {
+      'Match': [ARGB.matchFill, ARGB.matchFont],
+      'Present (asset diff)': [ARGB.diffFill, ARGB.diffFont],
+      'Missing in SUIP': [ARGB.missingFill, ARGB.missingFont],
+      'Extra in SUIP': [ARGB.extraFill, ARGB.extraFont],
+    };
+    let lastMod = null;
+    currentData.forEach(row => {
+      const [mod, eSeq, eAsset, sSeq, sAsset, status] = row;
+      const isNew = mod !== lastMod;
+      lastMod = mod;
+      const excelRow = ws2.addRow([isNew ? mod : '', eSeq, eAsset, sSeq, sAsset, statusShort[status] || status]);
+      excelRow.eachCell((cell, colNum) => {
+        cell.font = { name: 'Arial', size: 10, bold: (colNum === 1 && isNew) };
+        cell.border = thinBorderAll();
+        cell.alignment = { vertical: 'middle', wrapText: true, horizontal: (colNum === 3 || colNum === 5 || colNum === 6) ? 'center' : 'left' };
+        if (colNum === 1 && isNew) {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ARGB.chapterFill } };
+          cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: ARGB.chapterFont } };
+        }
+        if (colNum === 6) {
+          const pair = statusFillFont[status];
+          if (pair) {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: pair[0] } };
+            cell.font = { name: 'Arial', size: 10, color: { argb: pair[1] } };
+          }
+        }
+      });
+    });
+
+    /* ---------------- DETAILED STRUCTURE SHEETS ---------------- */
+    function addDetailSheet(name, course, accentArgb) {
+      const ws = wb.addWorksheet(name, { views: [{ state: 'frozen', ySplit: 1 }] });
+      ws.columns = [{ width: 38 }, { width: 42 }, { width: 42 }, { width: 16 }, { width: 40 }];
+      const hRow = ws.addRow(['Chapter (Module)', 'Sequence (Topic)', 'Unit', 'Asset Type', 'Component Name']);
+      hRow.eachCell(cell => {
+        cell.font = { name: 'Arial', bold: true, color: { argb: ARGB.headerFont } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: accentArgb } };
+        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      });
+      ws.getRow(1).height = 22;
+      let lastCh = null;
+      flattenDetailRows(course).forEach(row => {
+        const [chapter, seq, unit, ctype, cname] = row;
+        const showCh = chapter !== lastCh;
+        lastCh = chapter;
+        const excelRow = ws.addRow([showCh ? chapter : '', seq, unit, ctype, cname]);
+        excelRow.eachCell((cell, colNum) => {
+          cell.font = { name: 'Arial', size: 10, bold: (colNum === 1 && showCh) };
+          cell.border = thinBorderAll();
+          cell.alignment = { vertical: 'middle', wrapText: true };
+          if (colNum === 1 && showCh) {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ARGB.chapterFill } };
+            cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: ARGB.chapterFont } };
+          }
+        });
+      });
+    }
+    addDetailSheet('Course A - Detailed Structure', lastCourseA, 'FF2E75B6');
+    addDetailSheet('Course B - Detailed Structure', lastCourseB, 'FF548235');
+
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'Course_Gap_Analysis.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error(err);
+    alert('Could not build the Excel file: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Download Excel';
+  }
 });
 </script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 </body>
 </html>

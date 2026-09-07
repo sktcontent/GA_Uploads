@@ -12,6 +12,7 @@
     --diff: #ba7517; --diff-bg:#faeeda; --diff-text:#633806;
     --missing: #a32d2d; --missing-bg:#fcebeb; --missing-text:#791f1f;
     --extra: #185fa5; --extra-bg:#e6f1fb; --extra-text:#0c447c;
+    --update: #7a4fc9; --update-bg:#eee5fb; --update-text:#4b2d8a;
     --radius: 10px;
   }
   * { box-sizing: border-box; }
@@ -75,6 +76,7 @@
   .chip[data-f="Present (asset diff)"].active { background: var(--diff); }
   .chip[data-f="Missing in SUIP"].active { background: var(--missing); }
   .chip[data-f="Extra in SUIP"].active { background: var(--extra); }
+  .chip[data-f="Update Required"].active { background: var(--update); }
 
   .module { background: var(--card); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 14px; overflow: hidden; }
   .module-header {
@@ -89,6 +91,7 @@
   .badge.diff { background: var(--diff-bg); color: var(--diff-text); }
   .badge.missing { background: var(--missing-bg); color: var(--missing-text); }
   .badge.extra { background: var(--extra-bg); color: var(--extra-text); }
+  .badge.update { background: var(--update-bg); color: var(--update-text); }
   .chevron { transition: transform 0.15s ease; color: var(--text-muted); }
   .module.collapsed .chevron { transform: rotate(-90deg); }
   .module.collapsed .rows { display:none; }
@@ -106,6 +109,9 @@
   .status-pill.diff { background: var(--diff-bg); color: var(--diff-text); }
   .status-pill.missing { background: var(--missing-bg); color: var(--missing-text); }
   .status-pill.extra { background: var(--extra-bg); color: var(--extra-text); }
+  .status-pill.update { background: var(--update-bg); color: var(--update-text); }
+  .ref-note { font-size: 11px; color: var(--update-text); margin-top: 3px; }
+  .diff-note { font-size: 11px; color: var(--text-secondary); margin-top: 4px; padding-top: 4px; border-top: 1px dashed var(--border); }
   .asset { color: var(--text-secondary); font-size: 12px; }
   .empty-cell { color: var(--text-muted); font-style: italic; }
   .no-results { text-align:center; padding: 40px; color: var(--text-muted); }
@@ -170,6 +176,7 @@
       <div class="chip" data-f="Match">Match</div>
       <div class="chip" data-f="Present (asset diff)">Asset diff</div>
       <div class="chip" data-f="Missing in SUIP">Missing in B</div>
+      <div class="chip" data-f="Update Required">Update Required</div>
       <div class="chip" data-f="Extra in SUIP">Extra in B</div>
     </div>
 
@@ -310,7 +317,7 @@ function buildCourseTree(files) {
   return chapters;
 }
 
-/* ===================== GAP COMPARISON (mirrors the Python logic) ===================== */
+/* ===================== GAP COMPARISON (with cross-module recovery + asset diff) ===================== */
 
 function norm(s) {
   s = (s || '').toLowerCase().trim();
@@ -325,49 +332,99 @@ function typeStr(comps) {
   return Object.entries(counts).map(([t,c]) => c>1 ? `${t}x${c}` : t).join(', ');
 }
 
-function seqList(chapter) {
-  return chapter.sequentials.map(seq => {
-    let comps = [];
-    seq.verticals.forEach(v => comps = comps.concat(v.components));
-    return { seq: seq.name, norm: norm(seq.name), comps };
-  });
+// A component name looks like a random id/hash (not human-readable) if it's long hex-ish text.
+function looksLikeHash(name) {
+  if (!name) return true;
+  return /^[0-9a-f]{16,}$/i.test(name.trim());
 }
 
+function componentLabel(type, name) {
+  if (name && !looksLikeHash(name) && name.length <= 60) return `${type} ("${name}")`;
+  return type;
+}
+
+// Builds a flat list of every sequence (topic) across a whole course, tagged with its chapter.
+function buildSeqObjs(course) {
+  const all = [];
+  course.forEach((ch, chapterIndex) => {
+    ch.sequentials.forEach(seqNode => {
+      let comps = [];
+      seqNode.verticals.forEach(v => comps = comps.concat(v.components));
+      all.push({ chapterIndex, chapterName: ch.name, seq: seqNode.name, norm: norm(seqNode.name), comps });
+    });
+  });
+  return all;
+}
+
+// Compares two component lists and returns a human-readable summary of what's different.
+function diffComponents(compsA, compsB) {
+  const keyOf = (t, n) => `${t}::${n || ''}`;
+  const countA = {}, countB = {};
+  compsA.forEach(([t, n]) => { const k = keyOf(t, n); countA[k] = (countA[k]||0) + 1; });
+  compsB.forEach(([t, n]) => { const k = keyOf(t, n); countB[k] = (countB[k]||0) + 1; });
+  const keys = new Set([...Object.keys(countA), ...Object.keys(countB)]);
+  let identical = true;
+  const onlyA = [], onlyB = [];
+  keys.forEach(k => {
+    const av = countA[k] || 0, bv = countB[k] || 0;
+    if (av === bv) return;
+    identical = false;
+    const [type, name] = k.split('::');
+    const diffCount = Math.abs(av - bv);
+    const label = componentLabel(type, name) + (diffCount > 1 ? ` x${diffCount}` : '');
+    if (av > bv) onlyA.push(label); else onlyB.push(label);
+  });
+  let text = '';
+  if (!identical) {
+    const parts = [];
+    if (onlyA.length) parts.push('Only in A: ' + onlyA.join(', '));
+    if (onlyB.length) parts.push('Only in B: ' + onlyB.join(', '));
+    text = parts.join('  |  ');
+  }
+  return { identical, text };
+}
+
+// row shape: [module, aSeq, aAsset, bSeq, bAsset, status, foundInB, diffDetail]
 function compareCourses(courseA, courseB) {
   const rows = [];
-  const nChapters = Math.max(courseA.length, courseB.length);
+  const aAll = buildSeqObjs(courseA);
+  const bAll = buildSeqObjs(courseB);
+  const usedB = new Set();
 
+  const nChapters = Math.max(courseA.length, courseB.length);
   for (let i = 0; i < nChapters; i++) {
     const chA = courseA[i] || null;
     const chB = courseB[i] || null;
     const displayNameCh = chA ? chA.name : chB.name;
 
-    const aSeqs = chA ? seqList(chA) : [];
-    const bSeqs = chB ? seqList(chB) : [];
-    const bByNorm = {};
-    bSeqs.forEach(s => { (bByNorm[s.norm] = bByNorm[s.norm] || []).push(s); });
-    const used = new Set();
+    const aInChapter = aAll.filter(x => x.chapterIndex === i);
+    const bInChapter = bAll.filter(x => x.chapterIndex === i);
 
-    aSeqs.forEach(a => {
-      let match = null;
-      const candidates = bByNorm[a.norm] || [];
-      for (const c of candidates) { if (!used.has(c)) { match = c; break; } }
+    aInChapter.forEach(a => {
+      // 1) Try to match within the same module/chapter first
+      let match = bInChapter.find(b => b.norm === a.norm && !usedB.has(b));
       if (match) {
-        used.add(match);
-        const aCounts = {}, bCounts = {};
-        a.comps.forEach(([t]) => aCounts[t]=(aCounts[t]||0)+1);
-        match.comps.forEach(([t]) => bCounts[t]=(bCounts[t]||0)+1);
-        const sameTypes = JSON.stringify(Object.entries(aCounts).sort()) === JSON.stringify(Object.entries(bCounts).sort());
-        const status = sameTypes ? 'Match' : 'Present (asset diff)';
-        rows.push([displayNameCh, a.seq, typeStr(a.comps), match.seq, typeStr(match.comps), status]);
-      } else {
-        rows.push([displayNameCh, a.seq, typeStr(a.comps), '', '', 'Missing in SUIP']);
+        usedB.add(match);
+        const diff = diffComponents(a.comps, match.comps);
+        const status = diff.identical ? 'Match' : 'Present (asset diff)';
+        rows.push([displayNameCh, a.seq, typeStr(a.comps), match.seq, typeStr(match.comps), status, '', diff.text]);
+        return;
       }
+      // 2) Not found in this module — search the rest of Course B before calling it missing
+      const globalMatch = bAll.find(b => b.norm === a.norm && !usedB.has(b));
+      if (globalMatch) {
+        usedB.add(globalMatch);
+        const diff = diffComponents(a.comps, globalMatch.comps);
+        rows.push([displayNameCh, a.seq, typeStr(a.comps), globalMatch.seq, typeStr(globalMatch.comps), 'Update Required', globalMatch.chapterName, diff.text]);
+        return;
+      }
+      // 3) Genuinely not present anywhere in Course B
+      rows.push([displayNameCh, a.seq, typeStr(a.comps), '', '', 'Missing in SUIP', '', '']);
     });
 
-    bSeqs.forEach(b => {
-      if (!used.has(b)) {
-        rows.push([displayNameCh, '', '', b.seq, typeStr(b.comps), 'Extra in SUIP']);
+    bInChapter.forEach(b => {
+      if (!usedB.has(b)) {
+        rows.push([displayNameCh, '', '', b.seq, typeStr(b.comps), 'Extra in SUIP', '', '']);
       }
     });
   }
@@ -468,8 +525,8 @@ document.getElementById('backBtn').addEventListener('click', () => {
 
 /* ===================== RESULTS DASHBOARD ===================== */
 
-const statusClass = { 'Match':'match', 'Present (asset diff)':'diff', 'Missing in SUIP':'missing', 'Extra in SUIP':'extra' };
-const statusShort = { 'Match':'Match', 'Present (asset diff)':'Asset diff', 'Missing in SUIP':'Missing in B', 'Extra in SUIP':'Extra in B' };
+const statusClass = { 'Match':'match', 'Present (asset diff)':'diff', 'Missing in SUIP':'missing', 'Extra in SUIP':'extra', 'Update Required':'update' };
+const statusShort = { 'Match':'Match', 'Present (asset diff)':'Asset diff', 'Missing in SUIP':'Missing in B', 'Extra in SUIP':'Extra in B', 'Update Required':'Update Required' };
 
 let currentData = [];
 let activeFilter = 'all';
@@ -495,7 +552,7 @@ function renderResults(rows, nameA, nameB, statsA, statsB) {
 }
 
 function renderStats() {
-  const counts = { 'Match':0, 'Present (asset diff)':0, 'Missing in SUIP':0, 'Extra in SUIP':0 };
+  const counts = { 'Match':0, 'Present (asset diff)':0, 'Missing in SUIP':0, 'Extra in SUIP':0, 'Update Required':0 };
   currentData.forEach(r => counts[r[5]]++);
   const total = currentData.length;
   document.getElementById('stats').innerHTML = `
@@ -503,6 +560,7 @@ function renderStats() {
     <div class="stat match"><div class="num">${counts['Match']}</div><div class="label">Fully matching</div></div>
     <div class="stat diff"><div class="num">${counts['Present (asset diff)']}</div><div class="label">Asset differences</div></div>
     <div class="stat missing"><div class="num">${counts['Missing in SUIP']}</div><div class="label">Missing in B</div></div>
+    <div class="stat" style="border-left:3px solid var(--update)"><div class="num" style="color:var(--update)">${counts['Update Required']}</div><div class="label">Update required (moved)</div></div>
     <div class="stat extra"><div class="num">${counts['Extra in SUIP']}</div><div class="label">Extra in B</div></div>
   `;
 }
@@ -517,9 +575,9 @@ function renderModules() {
   const modules = [];
   const moduleMap = {};
   currentData.forEach(r => {
-    const [mod, eSeq, eAsset, sSeq, sAsset, status] = r;
+    const [mod, eSeq, eAsset, sSeq, sAsset, status, foundInB, diffDetail] = r;
     if (!moduleMap[mod]) { moduleMap[mod] = { name: mod, rows: [] }; modules.push(moduleMap[mod]); }
-    moduleMap[mod].rows.push({ eSeq, eAsset, sSeq, sAsset, status });
+    moduleMap[mod].rows.push({ eSeq, eAsset, sSeq, sAsset, status, foundInB, diffDetail });
   });
 
   const container = document.getElementById('modules');
@@ -535,11 +593,12 @@ function renderModules() {
     if (filteredRows.length === 0) return;
     anyVisible = true;
 
-    const counts = { 'Match':0, 'Present (asset diff)':0, 'Missing in SUIP':0, 'Extra in SUIP':0 };
+    const counts = { 'Match':0, 'Present (asset diff)':0, 'Missing in SUIP':0, 'Extra in SUIP':0, 'Update Required':0 };
     mod.rows.forEach(r => counts[r.status]++);
 
     const badgesHtml = `
       ${counts['Missing in SUIP'] ? `<span class="badge missing">${counts['Missing in SUIP']} missing</span>` : ''}
+      ${counts['Update Required'] ? `<span class="badge update">${counts['Update Required']} update</span>` : ''}
       ${counts['Present (asset diff)'] ? `<span class="badge diff">${counts['Present (asset diff)']} diff</span>` : ''}
       ${counts['Extra in SUIP'] ? `<span class="badge extra">${counts['Extra in SUIP']} extra</span>` : ''}
       ${counts['Match'] ? `<span class="badge match">${counts['Match']} match</span>` : ''}
@@ -548,7 +607,11 @@ function renderModules() {
     const rowsHtml = filteredRows.map(r => `
       <tr>
         <td>${r.eSeq ? escapeHtml(r.eSeq) : '<span class="empty-cell">&mdash;</span>'}${r.eAsset ? `<div class="asset">${escapeHtml(r.eAsset)}</div>` : ''}</td>
-        <td>${r.sSeq ? escapeHtml(r.sSeq) : '<span class="empty-cell">&mdash;</span>'}${r.sAsset ? `<div class="asset">${escapeHtml(r.sAsset)}</div>` : ''}</td>
+        <td>
+          ${r.sSeq ? escapeHtml(r.sSeq) : '<span class="empty-cell">&mdash;</span>'}${r.sAsset ? `<div class="asset">${escapeHtml(r.sAsset)}</div>` : ''}
+          ${r.foundInB ? `<div class="ref-note">Found in Course B under: <strong>${escapeHtml(r.foundInB)}</strong></div>` : ''}
+          ${r.diffDetail ? `<div class="diff-note">${escapeHtml(r.diffDetail)}</div>` : ''}
+        </td>
         <td><span class="status-pill ${statusClass[r.status]}">${statusShort[r.status]}</span></td>
       </tr>
     `).join('');
@@ -565,7 +628,8 @@ function renderModules() {
       </div>
       <div class="rows">
         <table>
-          <thead><tr><th style="width:38%">Course A topic</th><th style="width:38%">Course B topic</th><th style="width:24%">Status</th></tr></thead>
+          <thead><tr><th style="width:38%">Course A topic</th><th style="width:38%">Course B topic / reference / diff</th><th style="width:24%">Status</th></tr></thead>
+
           <tbody>${rowsHtml}</tbody>
         </table>
       </div>
@@ -639,6 +703,7 @@ const ARGB = {
   diffFill: 'FFFFEB9C', diffFont: 'FF9C6500',
   missingFill: 'FFFFC7CE', missingFont: 'FF9C0006',
   extraFill: 'FFDDEBF7', extraFont: 'FF1F4E78',
+  updateFill: 'FFE5D5F5', updateFont: 'FF4B2D8A',
   chapterFill: 'FFD9E1F2', chapterFont: 'FF1F4E78',
   border: 'FFD9D9D9',
 };
@@ -730,6 +795,19 @@ document.getElementById('downloadBtn').addEventListener('click', async () => {
     });
 
     r += 1;
+    ws1.getCell(`B${r}`).value = 'Update Required (present in Course B, but under a different module)';
+    ws1.getCell(`B${r}`).font = { name: 'Arial', size: 12, bold: true, color: { argb: ARGB.updateFont } };
+    ws1.mergeCells(`B${r}:F${r}`);
+    r += 1;
+    currentData.filter(x => x[5] === 'Update Required').forEach(x => {
+      const diffSuffix = x[7] ? `  —  ${x[7]}` : '';
+      ws1.getCell(`B${r}`).value = `\u2022 ${x[1]}  (found under "${x[6]}")${diffSuffix}`;
+      ws1.getCell(`B${r}`).font = { name: 'Arial', size: 10, color: { argb: ARGB.updateFont } };
+      ws1.mergeCells(`B${r}:F${r}`);
+      r += 1;
+    });
+
+    r += 1;
     ws1.getCell(`B${r}`).value = 'Extra in Course B';
     ws1.getCell(`B${r}`).font = { name: 'Arial', size: 12, bold: true, color: { argb: ARGB.extraFont } };
     r += 1;
@@ -742,9 +820,9 @@ document.getElementById('downloadBtn').addEventListener('click', async () => {
     /* ---------------- GAP ANALYSIS ---------------- */
     const ws2 = wb.addWorksheet('Gap Analysis', { views: [{ state: 'frozen', ySplit: 1 }] });
     ws2.columns = [
-      { width: 30 }, { width: 42 }, { width: 16 }, { width: 42 }, { width: 16 }, { width: 20 },
+      { width: 30 }, { width: 38 }, { width: 14 }, { width: 38 }, { width: 14 }, { width: 18 }, { width: 26 }, { width: 46 },
     ];
-    const headerRow2 = ws2.addRow(['Module / Chapter', 'Course A - Topic', 'Course A - Assets', 'Course B - Topic', 'Course B - Assets', 'Status']);
+    const headerRow2 = ws2.addRow(['Module / Chapter', 'Course A - Topic', 'Course A - Assets', 'Course B - Topic', 'Course B - Assets', 'Status', 'Found in Course B (if moved)', 'Asset Difference Detail']);
     styleHeaderRow(headerRow2);
     ws2.getRow(1).height = 30;
 
@@ -753,13 +831,14 @@ document.getElementById('downloadBtn').addEventListener('click', async () => {
       'Present (asset diff)': [ARGB.diffFill, ARGB.diffFont],
       'Missing in SUIP': [ARGB.missingFill, ARGB.missingFont],
       'Extra in SUIP': [ARGB.extraFill, ARGB.extraFont],
+      'Update Required': [ARGB.updateFill, ARGB.updateFont],
     };
     let lastMod = null;
     currentData.forEach(row => {
-      const [mod, eSeq, eAsset, sSeq, sAsset, status] = row;
+      const [mod, eSeq, eAsset, sSeq, sAsset, status, foundInB, diffDetail] = row;
       const isNew = mod !== lastMod;
       lastMod = mod;
-      const excelRow = ws2.addRow([isNew ? mod : '', eSeq, eAsset, sSeq, sAsset, statusShort[status] || status]);
+      const excelRow = ws2.addRow([isNew ? mod : '', eSeq, eAsset, sSeq, sAsset, statusShort[status] || status, foundInB || '', diffDetail || '']);
       excelRow.eachCell((cell, colNum) => {
         cell.font = { name: 'Arial', size: 10, bold: (colNum === 1 && isNew) };
         cell.border = thinBorderAll();
